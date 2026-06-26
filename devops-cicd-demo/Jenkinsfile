@@ -1,0 +1,96 @@
+pipeline {
+    agent { label 'ubuntu-agent' }   // your remote Ubuntu agent
+
+    environment {
+        DOCKERHUB_CREDS   = credentials('dockerhub-creds')   // Jenkins credential ID
+        IMAGE_NAME         = 'yourdockerhubusername/devops-cicd-demo'
+        IMAGE_TAG           = "${env.BUILD_NUMBER}"
+        EC2_HOST            = credentials('ec2-host')         // stores EC2 public IP/DNS
+        SSH_KEY             = credentials('ec2-ssh-key')      // private key Jenkins credential
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                echo 'Pulling source code from GitHub...'
+                checkout scm
+            }
+        }
+
+        stage('Build') {
+            steps {
+                echo 'Building with Maven...'
+                dir('app') {
+                    sh 'mvn clean compile'
+                }
+            }
+        }
+
+        stage('Test') {
+            steps {
+                echo 'Running unit tests...'
+                dir('app') {
+                    sh 'mvn test'
+                }
+            }
+            post {
+                always {
+                    junit 'app/target/surefire-reports/*.xml'
+                }
+            }
+        }
+
+        stage('Package') {
+            steps {
+                echo 'Packaging jar...'
+                dir('app') {
+                    sh 'mvn package -DskipTests'
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                echo 'Building Docker image...'
+                dir('app') {
+                    sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -t ${IMAGE_NAME}:latest ."
+                }
+            }
+        }
+
+        stage('Release - Push to Registry') {
+            steps {
+                echo 'Pushing image to Docker Hub...'
+                sh "echo $DOCKERHUB_CREDS_PSW | docker login -u $DOCKERHUB_CREDS_USR --password-stdin"
+                sh "docker push ${IMAGE_NAME}:${IMAGE_TAG}"
+                sh "docker push ${IMAGE_NAME}:latest"
+            }
+        }
+
+        stage('Deploy to EC2') {
+            steps {
+                echo 'Deploying container to AWS EC2 instance provisioned by Terraform...'
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh """
+                        ssh -o StrictHostKeyChecking=no ubuntu@${EC2_HOST} '
+                            docker pull ${IMAGE_NAME}:latest &&
+                            docker stop devops-demo || true &&
+                            docker rm devops-demo || true &&
+                            docker run -d --name devops-demo -p 80:8080 ${IMAGE_NAME}:latest
+                        '
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Pipeline finished successfully. App is live on EC2.'
+        }
+        failure {
+            echo 'Pipeline failed. Check the stage logs above.'
+        }
+    }
+}

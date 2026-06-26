@@ -1,0 +1,10 @@
+target/
+*.class
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+*.log
+.DS_Store
+.idea/
+*.iml
